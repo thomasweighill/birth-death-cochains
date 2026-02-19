@@ -18,7 +18,7 @@ def vec_to_sparse(cc, eta_vec, thresh=None):
                     eta_sparse.append([j, i, eta_vec[index]])
     return eta_sparse
 
-# The following function is made by Katya. Ling will ask for permission to use it.
+# The following function is taken from https://github.com/eivshina/persistent-cup-length/blob/main/cup_length_utils.py
 def decode_combinatorial_number(N, k):
     """
     Decode the number N from the combinatorial number system representation
