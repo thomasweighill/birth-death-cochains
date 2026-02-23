@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from ripser import ripser
 import numpy as np
 import matplotlib.pyplot as plt
@@ -89,7 +91,7 @@ def find_birth_death_cochains(X_old, show_solutions=False, save_plots=False, eps
     Parameters:
         X_old: the euclidean dataset
         show_solutions: whether to plot the solutions
-        save_plots: whether to save plots to disk
+        save_plots: whether to save plots to make a figure for the paper, hard-coded style parameters
         epsilon: how close to each end of the bar to look for relative cochains
         p: the prime to use for the integer lift
         step: the current step for plotting
@@ -189,12 +191,12 @@ def find_birth_death_cochains(X_old, show_solutions=False, save_plots=False, eps
     alpha_at_t = alpha.copy()
     alpha_at_t[edges_not_at_t] = 0
     if np.any(alpha_at_t != 0):
-        print('Adjusting alpha to be zero before birth time')
+        #print('Adjusting alpha to be zero before birth time')
         alpha -= cobmat1 @ lsqr(cobmat1_at_t, alpha_at_t)[0]
         alpha_at_t = alpha.copy()
         alpha_at_t[edges_not_at_t] = 0
-        if np.any(alpha_at_t != 0):
-            print('Alpha adjusted to be at most ', np.max(np.abs(alpha_at_t)), 'before birth time.')
+        #if np.any(alpha_at_t != 0):
+            #print('Alpha adjusted to be at most ', np.max(np.abs(alpha_at_t)), 'before birth time.')
 
     # Step 2b: Find the birth cochain
     # We have a long exact sequence ... -> H^0(K) -> H^1(L,K) -> H^1(L) -> ... where L = X_b and K = X_t
@@ -253,6 +255,10 @@ def find_birth_death_cochains(X_old, show_solutions=False, save_plots=False, eps
     if save_plots and step % 50 == 0:
         # plot for paper
         _, ax = plt.subplots(1,1,figsize=(6,6))
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlim(-1.5, 1.5)
+        ax.set_ylim(-1.5, 1.5)
         ax.scatter(X[:,0], X[:,1], c='black', s=100)
         for i,(x,y) in enumerate(birth_cochain_support):
             ax.plot(
@@ -298,6 +304,7 @@ def find_birth_death_cochains(X_old, show_solutions=False, save_plots=False, eps
         plt.suptitle('Step {} Birth cochain {:.3f}+-{:.3f}, Death cochain {:.3f}+-{:.3f}'.format(step, b, bahead-b, d, d-dbehind))
         plt.show()
         plt.close() 
+
 
     return birth_cochain_support, birth_cochain_values, death_cochain_edge_support, death_cochain_edge_values, death_cochain_support, death_cochain_values, b, d, lazy_data
 
@@ -414,7 +421,7 @@ def project_to_simplex(weights):
 
 def update_points(
         X_old, method='cochains', penalty=False, normalize=False, gamma=0.01, epsilon=0.1, relative_epsilon=True,
-        save_plots=False, show_solutions=False, step=0, lazy_data=None
+        save_plots=False, show_solutions=False, step=0, lazy_data=None, return_losses=False
     ):
     '''
     Update the points to promote an H1 point
@@ -438,6 +445,7 @@ def update_points(
         b, d: old birth and death
     '''
     X = X_old.copy()
+    losses = {}
     if not isinstance(epsilon, list):
         epsilons = [epsilon]
     else:
@@ -458,6 +466,7 @@ def update_points(
 
     elif method == 'cochains':
         grad = np.zeros(X.shape)
+        losses['persistence_content'] = 0
         for epsilon in epsilons:
             b_edges, b_coeffs, d_edges, d_coeffs, _, _, b, d, lazy_data = find_birth_death_cochains(
                 X, epsilon=epsilon, save_plots=save_plots, show_solutions=show_solutions, step=step, lazy_data=lazy_data, relative_epsilon=relative_epsilon
@@ -468,10 +477,10 @@ def update_points(
                 d_coeffs = np.abs(d_coeffs)
                 d_edges = np.array(d_edges)
 
-                v = X[b_edges[:, 0], :] - X[b_edges[:, 1], :]
-                v = v / np.linalg.norm(v, axis=1)[:, None]
-                w = X[d_edges[:, 0], :] - X[d_edges[:, 1], :]
-                w = w / np.linalg.norm(w, axis=1)[:, None]
+                vraw = X[b_edges[:, 0], :] - X[b_edges[:, 1], :]
+                v = vraw / np.linalg.norm(vraw, axis=1)[:, None]
+                wraw = X[d_edges[:, 0], :] - X[d_edges[:, 1], :]
+                w = wraw / np.linalg.norm(wraw, axis=1)[:, None]
 
                 for i in range(len(b_edges)):
                     grad[b_edges[i, 0], :] -= b_coeffs[i] * v[i]
@@ -479,7 +488,11 @@ def update_points(
                 for i in range(len(d_edges)):
                     grad[d_edges[i, 0], :] += d_coeffs[i] * w[i]
                     grad[d_edges[i, 1], :] += -d_coeffs[i] * w[i]
-            
+                
+                if return_losses:
+                    losses['persistence_content'] += 1/len(epsilons)*(
+                       -np.sum(b_coeffs*np.linalg.norm(vraw, axis=1)) + np.sum(d_coeffs*np.linalg.norm(wraw, axis=1))
+                    )
             else:
                 print('No H1 class found')
 
@@ -494,6 +507,7 @@ def update_points(
     if penalty:
         X = X_old + gamma*grad
         X = X - gamma*(X_old - X_old/np.linalg.norm(X_old, axis=1)[:,None])*np.array(np.linalg.norm(X_old, axis=1) > 1)[:,None]
+        losses['penalty'] = np.sum(np.maximum(0, (np.linalg.norm(X_old, axis=1) - 1)**2))
     elif normalize:
         grad_proj = grad - np.vdot(grad, X_old)*X_old/np.linalg.norm(X_old)**2
         if show_solutions:
@@ -505,8 +519,11 @@ def update_points(
             plt.gca().set_aspect(1)
             plt.show()
         X = np.cos(gamma*np.linalg.norm(grad_proj))*X + np.sin(gamma*np.linalg.norm(grad_proj))*grad_proj/np.linalg.norm(grad_proj)
-
-    return X, b_index, d_index, b, d, lazy_data  
+    
+    if return_losses:
+        return X, b_index, d_index, b, d, lazy_data, losses
+    else:
+        return X, b_index, d_index, b, d, lazy_data  
 
 def one_step_reweight_enhance_H1(
     X, method='cochains', epsilon=0.1, relative_epsilon=True, A=None):
@@ -523,7 +540,7 @@ def one_step_reweight_enhance_H1(
 
 def move_points_enhance_H1(
     X, gamma=0.1, method='cochains', epsilon=0.1, penalty=False, normalize=False, relative_epsilon=True,
-    max_iter=1000, tol=1e-4, verbose=False, log=False, save_plots=False, show_solutions=False, step=0):
+    max_iter=1000, tol=1e-4, verbose=False, log=False, save_plots=False, show_solutions=False, step=0, return_losses=False):
     '''
     Optimize points to promote a H1 feature
 
@@ -547,18 +564,23 @@ def move_points_enhance_H1(
         X: the new point cloud
         full_log: log of X values, only if log=True
     '''    
-    bd_log = []
-    X_log = []
+    full_log = defaultdict(list)
 
     X_old = X.copy()
     lazy_data = None
 
     for step in tqdm(range(max_iter)):
         thisepsilon = epsilon
-        X_new, b_index, d_index, b, d, lazy_data = update_points(
-            X_old, gamma=gamma, method=method, epsilon=thisepsilon, save_plots=save_plots, relative_epsilon=relative_epsilon,
-            show_solutions=show_solutions, step=step, lazy_data=lazy_data, normalize=normalize, penalty=penalty
-        )
+        if return_losses:
+            X_new, b_index, d_index, b, d, lazy_data, losses = update_points(
+                X_old, gamma=gamma, method=method, epsilon=thisepsilon, save_plots=save_plots, relative_epsilon=relative_epsilon,
+                show_solutions=show_solutions, step=step, lazy_data=lazy_data, normalize=normalize, penalty=penalty, return_losses=True
+            )        
+        else:  
+            X_new, b_index, d_index, b, d, lazy_data = update_points(
+                X_old, gamma=gamma, method=method, epsilon=thisepsilon, save_plots=save_plots, relative_epsilon=relative_epsilon,
+                show_solutions=show_solutions, step=step, lazy_data=lazy_data, normalize=normalize, penalty=penalty
+            )
         if verbose:
             print(b_index, d_index, b, d)
             plt.scatter(X_old[:,0], X_old[:,1])
@@ -570,8 +592,11 @@ def move_points_enhance_H1(
             plt.gca().set_aspect('equal', adjustable='box')
             plt.show()
         if log:
-            bd_log.append([b,d])
-            X_log.append(X_old)
+            if return_losses:
+                for loss_type, loss_value in losses.items():
+                    full_log[loss_type].append(loss_value)
+            full_log['bd'].append([b,d])
+            full_log['X'].append(X_old)
         if np.max(np.abs(X_new - X_old)) <= tol:
             break
         else:
@@ -584,9 +609,11 @@ def move_points_enhance_H1(
     if not log:
         return X_new
     else:
-        bd_log.append([b,d])
-        X_log.append(X_new)
-        full_log = {'bd': np.array(bd_log), 'X': np.array(X_log)}
+        if return_losses:
+            for loss_type, loss_value in losses.items():
+                full_log[loss_type].append(loss_value)
+        full_log['bd'].append([b,d])
+        full_log['X'].append(X_new)
         return X_new, full_log
     
 def reweight_features_enhance_H1(
